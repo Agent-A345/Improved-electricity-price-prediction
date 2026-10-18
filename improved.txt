@@ -1,0 +1,803 @@
+!pip install -q streamlit tensorflow scikit-learn pandas numpy
+
+app_code = r'''
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
+from tensorflow.keras.callbacks import EarlyStopping
+
+
+st.set_page_config(
+    page_title="WattWise",
+    page_icon="⚡",
+    layout="wide"
+)
+
+
+@st.cache_data
+def create_dataset():
+
+    np.random.seed(42)
+
+    dates = pd.date_range(
+        "2023-01-01",
+        "2025-12-31",
+        freq="D"
+    )
+
+    day = np.arange(len(dates))
+
+    weekly = 15 * np.sin(
+        2 * np.pi * day / 7
+    )
+
+    yearly = 12 * np.sin(
+        2 * np.pi * day / 365
+    )
+
+    noise = np.random.normal(
+        0,
+        2,
+        len(dates)
+    )
+
+    consumption = (
+        120
+        + weekly
+        + yearly
+        + noise
+    )
+
+    price = (
+        8
+        + 0.03 * (consumption - 120)
+        + np.random.normal(
+            0,
+            0.15,
+            len(dates)
+        )
+    )
+
+    price = np.maximum(
+        price,
+        5
+    )
+
+    df = pd.DataFrame({
+        "Date": dates,
+        "Consumption": consumption,
+        "Price_per_kWh": price
+    })
+
+    return df
+
+
+@st.cache_resource(show_spinner=False)
+def train_model():
+
+    df = create_dataset()
+
+    scaler = MinMaxScaler()
+
+    scaled_consumption = scaler.fit_transform(
+        df[["Consumption"]]
+    ).flatten()
+
+    LOOKBACK = 30
+    FORECAST_DAYS = 30
+
+    X = []
+    y = []
+
+    for i in range(
+        len(scaled_consumption)
+        - LOOKBACK
+        - FORECAST_DAYS
+        + 1
+    ):
+
+        X.append(
+            scaled_consumption[
+                i:i + LOOKBACK
+            ]
+        )
+
+        y.append(
+            scaled_consumption[
+                i + LOOKBACK:
+                i + LOOKBACK + FORECAST_DAYS
+            ]
+        )
+
+    X = np.array(X)
+    y = np.array(y)
+
+    X = X.reshape(
+        X.shape[0],
+        LOOKBACK,
+        1
+    )
+
+    split = int(
+        len(X) * 0.80
+    )
+
+    X_train = X[:split]
+    y_train = y[:split]
+
+    model = Sequential([
+        Input(shape=(30, 1)),
+
+        LSTM(
+            64,
+            return_sequences=True
+        ),
+
+        Dropout(0.10),
+
+        LSTM(32),
+
+        Dropout(0.10),
+
+        Dense(
+            32,
+            activation="relu"
+        ),
+
+        Dense(30)
+    ])
+
+    model.compile(
+        optimizer="adam",
+        loss="mse"
+    )
+
+    early_stop = EarlyStopping(
+        monitor="val_loss",
+        patience=5,
+        restore_best_weights=True
+    )
+
+    model.fit(
+        X_train,
+        y_train,
+        epochs=40,
+        batch_size=32,
+        validation_split=0.10,
+        callbacks=[early_stop],
+        verbose=0
+    )
+
+    return (
+        model,
+        scaler,
+        scaled_consumption
+    )
+
+
+# =========================================================
+# LANDING PAGE
+# =========================================================
+
+if "started" not in st.session_state:
+    st.session_state.started = False
+
+
+if not st.session_state.started:
+
+    st.markdown(
+        """
+        <div style="
+            text-align:center;
+            padding:80px 20px 40px 20px;
+        ">
+
+            <div style="
+                font-size:75px;
+                margin-bottom:10px;
+            ">
+                ⚡
+            </div>
+
+            <h1 style="
+                font-size:60px;
+                font-weight:800;
+                margin:0;
+            ">
+                WATTWISE
+            </h1>
+
+            <h2 style="
+                font-size:28px;
+                font-weight:500;
+                margin-top:15px;
+            ">
+                Smart Electricity Consumption & Bill Forecasting
+            </h2>
+
+            <p style="
+                font-size:18px;
+                margin-top:25px;
+            ">
+                Predict electricity consumption, estimate monthly bills,
+                and visualize future energy usage using AI-powered forecasting.
+            </p>
+
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        "<br><br>",
+        unsafe_allow_html=True
+    )
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+
+    with col2:
+
+        if st.button(
+            "🚀 Start Forecasting",
+            type="primary",
+            use_container_width=True
+        ):
+
+            st.session_state.started = True
+
+            st.rerun()
+
+    st.stop()
+
+
+# =========================================================
+# MAIN APPLICATION
+# =========================================================
+
+st.title(
+    "⚡ WattWise"
+)
+
+st.write(
+    "Enter your electricity details to generate "
+    "the forecast and estimated monthly bill."
+)
+
+
+st.sidebar.header(
+    "Electricity Input"
+)
+
+
+consumer_type = st.sidebar.selectbox(
+    "Consumer Type",
+    [
+        "Household",
+        "Industrial"
+    ]
+)
+
+
+month_names = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December"
+]
+
+
+selected_month = st.sidebar.selectbox(
+    "Forecast Month",
+    month_names,
+    index=1
+)
+
+
+unit_cost = st.sidebar.number_input(
+    "Electricity Unit Cost (₹/kWh)",
+    min_value=1.0,
+    max_value=100.0,
+    value=8.0,
+    step=0.5
+)
+
+
+if consumer_type == "Household":
+
+    number_of_people = st.sidebar.number_input(
+        "Number of People",
+        min_value=1,
+        max_value=20,
+        value=4,
+        step=1
+    )
+
+    daily_consumption = st.sidebar.number_input(
+        "Average Daily Consumption (kWh)",
+        min_value=5.0,
+        max_value=100.0,
+        value=8.0,
+        step=1.0
+    )
+
+else:
+
+    industry_size = st.sidebar.selectbox(
+        "Industry Size",
+        [
+            "Small Industry",
+            "Medium Industry",
+            "Large Industry"
+        ]
+    )
+
+    if industry_size == "Small Industry":
+
+        minimum = 50
+        maximum = 1000
+        default = 250
+
+    elif industry_size == "Medium Industry":
+
+        minimum = 500
+        maximum = 5000
+        default = 1000
+
+    else:
+
+        minimum = 2000
+        maximum = 20000
+        default = 5000
+
+    daily_consumption = st.sidebar.number_input(
+        "Average Daily Consumption (kWh)",
+        min_value=float(minimum),
+        max_value=float(maximum),
+        value=float(default),
+        step=50.0
+    )
+
+
+st.subheader(
+    "Your Electricity Details"
+)
+
+
+col1, col2, col3, col4 = st.columns(4)
+
+
+with col1:
+
+    st.metric(
+        "Consumer",
+        consumer_type
+    )
+
+
+with col2:
+
+    st.metric(
+        "Forecast Month",
+        selected_month
+    )
+
+
+with col3:
+
+    st.metric(
+        "Daily Consumption",
+        f"{daily_consumption:.1f} kWh"
+    )
+
+
+with col4:
+
+    st.metric(
+        "Unit Cost",
+        f"₹{unit_cost:.2f}"
+    )
+
+
+st.divider()
+
+
+generate = st.button(
+    "🚀 Generate Electricity Forecast",
+    type="primary",
+    use_container_width=True
+)
+
+
+if generate:
+
+    processing_text = st.empty()
+
+    progress_bar = st.progress(0)
+
+
+    processing_text.info(
+        "⏳ Processing... Preparing electricity forecast."
+    )
+
+    progress_bar.progress(10)
+
+
+    processing_text.info(
+        "⏳ Processing... Training prediction model."
+    )
+
+    progress_bar.progress(20)
+
+
+    model, scaler, scaled_consumption = train_model()
+
+
+    progress_bar.progress(55)
+
+
+    processing_text.info(
+        "⏳ Processing... Generating consumption prediction."
+    )
+
+
+    LOOKBACK = 30
+
+    sequence = scaled_consumption[
+        -LOOKBACK:
+    ].reshape(
+        1,
+        LOOKBACK,
+        1
+    )
+
+
+    future_scaled = model.predict(
+        sequence,
+        verbose=0
+    )[0]
+
+
+    future_predictions = scaler.inverse_transform(
+        future_scaled.reshape(
+            -1,
+            1
+        )
+    ).flatten()
+
+
+    progress_bar.progress(70)
+
+
+    processing_text.info(
+        "⏳ Processing... Adjusting forecast for your consumption."
+    )
+
+
+    model_average = future_predictions.mean()
+
+    if model_average <= 0:
+        model_average = 1
+
+
+    future_predictions = (
+        future_predictions
+        / model_average
+        * daily_consumption
+    )
+
+
+    if consumer_type == "Household":
+
+        lower_limit = (
+            daily_consumption * 0.75
+        )
+
+        upper_limit = (
+            daily_consumption * 1.25
+        )
+
+    else:
+
+        lower_limit = (
+            daily_consumption * 0.85
+        )
+
+        upper_limit = (
+            daily_consumption * 1.15
+        )
+
+
+    future_predictions = np.clip(
+        future_predictions,
+        lower_limit,
+        upper_limit
+    )
+
+
+    month_number = (
+        month_names.index(
+            selected_month
+        ) + 1
+    )
+
+
+    forecast_year = 2026
+
+
+    month_start = pd.Timestamp(
+        year=forecast_year,
+        month=month_number,
+        day=1
+    )
+
+
+    month_end = (
+        month_start
+        + pd.offsets.MonthEnd(0)
+    )
+
+
+    forecast_dates = pd.date_range(
+        month_start,
+        month_end,
+        freq="D"
+    )
+
+
+    number_of_days = len(
+        forecast_dates
+    )
+
+
+    future_predictions = np.interp(
+        np.linspace(
+            0,
+            29,
+            number_of_days
+        ),
+        np.arange(30),
+        future_predictions
+    )
+
+
+    progress_bar.progress(85)
+
+
+    processing_text.info(
+        "⏳ Processing... Calculating electricity bill."
+    )
+
+
+    fixed_price = unit_cost
+
+
+    daily_bill = (
+        future_predictions
+        * fixed_price
+    )
+
+
+    total_consumption = (
+        future_predictions.sum()
+    )
+
+
+    total_bill = (
+        daily_bill.sum()
+    )
+
+
+    average_consumption = (
+        future_predictions.mean()
+    )
+
+
+    forecast_df = pd.DataFrame({
+
+        "Date":
+            forecast_dates,
+
+        "Predicted Consumption (kWh)":
+            np.round(
+                future_predictions,
+                2
+            ),
+
+        "Unit Cost (₹/kWh)":
+            np.full(
+                number_of_days,
+                fixed_price
+            ),
+
+        "Estimated Daily Bill (₹)":
+            np.round(
+                daily_bill,
+                2
+            )
+    })
+
+
+    progress_bar.progress(100)
+
+
+    processing_text.success(
+        "✅ Forecast generated successfully!"
+    )
+
+
+    st.divider()
+
+
+    st.subheader(
+        f"📊 {selected_month} 2026 Electricity Forecast"
+    )
+
+
+    c1, c2, c3 = st.columns(3)
+
+
+    with c1:
+
+        st.metric(
+            "Total Consumption",
+            f"{total_consumption:,.2f} kWh"
+        )
+
+
+    with c2:
+
+        st.metric(
+            "Average Daily Consumption",
+            f"{average_consumption:,.2f} kWh"
+        )
+
+
+    with c3:
+
+        st.metric(
+            "Estimated Monthly Bill",
+            f"₹{total_bill:,.2f}"
+        )
+
+
+    st.divider()
+
+
+    st.subheader(
+        "📋 Daily Forecast"
+    )
+
+
+    st.dataframe(
+        forecast_df,
+        use_container_width=True,
+        hide_index=True
+    )
+
+
+    st.divider()
+
+
+    st.subheader(
+        "📈 Daily Electricity Consumption Forecast"
+    )
+
+
+    consumption_chart = (
+        forecast_df
+        .set_index("Date")[
+            "Predicted Consumption (kWh)"
+        ]
+    )
+
+
+    st.line_chart(
+        consumption_chart
+    )
+
+
+    st.subheader(
+        "💰 Daily Electricity Bill"
+    )
+
+
+    bill_chart = (
+        forecast_df
+        .set_index("Date")[
+            "Estimated Daily Bill (₹)"
+        ]
+    )
+
+
+    st.line_chart(
+        bill_chart
+    )
+
+
+    st.divider()
+
+
+    st.subheader(
+        "💡 Monthly Bill Summary"
+    )
+
+
+    st.write(
+        f"Total Predicted Consumption: "
+        f"{total_consumption:,.2f} kWh"
+    )
+
+    st.write(
+        f"Fixed Electricity Price: "
+        f"₹{fixed_price:.2f} / kWh"
+    )
+
+    st.write(
+        f"Estimated Monthly Bill: "
+        f"₹{total_bill:,.2f}"
+    )
+
+
+    st.success(
+        f"Your estimated electricity bill for "
+        f"{selected_month} 2026 is "
+        f"₹{total_bill:,.2f}"
+    )
+
+'''
+
+
+with open(
+    "/content/app.py",
+    "w",
+    encoding="utf-8"
+) as f:
+
+    f.write(app_code)
+
+
+!pkill -f "streamlit run" || true
+!pkill -f cloudflared || true
+
+
+print("Starting Streamlit...")
+
+
+!streamlit run /content/app.py --server.port 8501 --server.address 0.0.0.0 > /content/streamlit.log 2>&1 &
+
+
+!sleep 5
+
+
+print("Starting public browser link...")
+
+
+!wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /content/cloudflared
+
+!chmod +x /content/cloudflared
+
+
+!nohup /content/cloudflared tunnel --url http://localhost:8501 --no-autoupdate > /content/cloudflare.log 2>&1 &
+
+
+!sleep 8
+
+
+print("\n========================================")
+print("OPEN THIS LINK IN YOUR BROWSER")
+print("========================================\n")
+
+
+!grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare.com' /content/cloudflare.log | head -1
